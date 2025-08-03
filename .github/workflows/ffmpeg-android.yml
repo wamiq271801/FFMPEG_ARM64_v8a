@@ -424,15 +424,15 @@ jobs:
         
         # Create AndroidManifest.xml for AAR
         cat > $BUILD_DIR/aar/AndroidManifest.xml << 'EOF'
-<?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.ffmpeg.android"
-    android:versionCode="1"
-    android:versionName="1.0">
-    
-    <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="34" />
-</manifest>
-EOF
+        <?xml version="1.0" encoding="utf-8"?>
+        <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+            package="com.ffmpeg.android"
+            android:versionCode="1"
+            android:versionName="1.0">
+            
+            <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="34" />
+        </manifest>
+        EOF
 
         # Create classes.jar (empty but required for AAR)
         mkdir -p $BUILD_DIR/temp/classes
@@ -507,67 +507,64 @@ EOF
           fi
         fi
         
-        # Create comprehensive summary
-        cat > $BUILD_DIR/build-summary.md << 'SUMMARY_EOF'
-        # FFmpeg Android Build Summary
+        # Generate build summary
+        echo "=== Generating Build Summary ===" 
+        echo "# FFmpeg Android Build Summary" > $BUILD_DIR/build-summary.md
+        echo "" >> $BUILD_DIR/build-summary.md
+        echo "**Build Date:** ${{ steps.setup-info.outputs.build-date }}" >> $BUILD_DIR/build-summary.md
+        echo "**Target Architecture:** ${{ env.TARGET_ARCH }}" >> $BUILD_DIR/build-summary.md
+        echo "**Android API Level:** ${{ env.ANDROID_API_LEVEL }}" >> $BUILD_DIR/build-summary.md
+        echo "**FFmpeg Version:** ${{ env.FFMPEG_VERSION }}" >> $BUILD_DIR/build-summary.md
+        echo "**FFmpeg Commit:** ${{ env.FFMPEG_HASH }}" >> $BUILD_DIR/build-summary.md
+        echo "**Build Type:** ${{ env.BUILD_TYPE }}" >> $BUILD_DIR/build-summary.md
         
-        **Build Date:** ${{ steps.setup-info.outputs.build-date }}
-        **Target Architecture:** ${{ env.TARGET_ARCH }}
-        **Android API Level:** ${{ env.ANDROID_API_LEVEL }}
-        **FFmpeg Version:** ${{ env.FFMPEG_VERSION }}
-        **FFmpeg Commit:** ${{ env.FFMPEG_HASH }}
-        **Build Type:** ${{ env.BUILD_TYPE }}
-        **Build Status:** SUCCESS_STATUS_PLACEHOLDER
-        
-        ## External Libraries Built
-        - libx264 (H.264 video encoding)
-        - libopus (Opus audio codec)
-        - libvpx (VP8/VP9 video codecs)
-        - libmp3lame (MP3 audio encoding)
-        
-        ## AAR Information
-        - **File:** AAR_NAME_PLACEHOLDER
-        - **Size:** AAR_SIZE_PLACEHOLDER
-        - **Target ABI:** arm64-v8a only
-        
-        ## Issues Found
-        ISSUES_PLACEHOLDER
-        
-        ## Build Logs Location
-        - Configuration logs: LOG_DIR_PLACEHOLDER/*-configure.log
-        - Build logs: LOG_DIR_PLACEHOLDER/*-build.log
-        - Install logs: LOG_DIR_PLACEHOLDER/*-install.log
-        
-        ## Troubleshooting
-        TROUBLESHOOTING_PLACEHOLDER
-SUMMARY_EOF
-
-        # Replace placeholders with actual values
-        sed -i "s/SUCCESS_STATUS_PLACEHOLDER/$([ "$BUILD_SUCCESS" = true ] && echo "✅ SUCCESS" || echo "❌ FAILED")/g" $BUILD_DIR/build-summary.md
-        sed -i "s/AAR_NAME_PLACEHOLDER/$AAR_NAME/g" $BUILD_DIR/build-summary.md
-        sed -i "s/AAR_SIZE_PLACEHOLDER/$([ -f "$AAR_PATH" ] && ls -lh "$AAR_PATH" | awk '{print $5}' || echo "N/A")/g" $BUILD_DIR/build-summary.md
-        sed -i "s|LOG_DIR_PLACEHOLDER|$LOG_DIR|g" $BUILD_DIR/build-summary.md
-        
-        if [ -n "$ISSUES_FOUND" ]; then
-          echo -e "$ISSUES_FOUND" | sed 's/^//' > /tmp/issues.txt
-          sed -i "/ISSUES_PLACEHOLDER/r /tmp/issues.txt" $BUILD_DIR/build-summary.md
-          sed -i "/ISSUES_PLACEHOLDER/d" $BUILD_DIR/build-summary.md
+        if [ "$BUILD_SUCCESS" = true ]; then
+          echo "**Build Status:** ✅ SUCCESS" >> $BUILD_DIR/build-summary.md
         else
-          sed -i "s/ISSUES_PLACEHOLDER/No issues detected/g" $BUILD_DIR/build-summary.md
+          echo "**Build Status:** ❌ FAILED" >> $BUILD_DIR/build-summary.md
         fi
         
-        if [ "$BUILD_SUCCESS" = false ]; then
-          cat > /tmp/troubleshooting.txt << 'TROUBLE_EOF'
-### Common Solutions:
-1. Check NDK compatibility with external libraries
-2. Verify license compatibility (GPL vs LGPL)
-3. Check for missing dependencies or conflicts
-4. Review configure flags for target architecture
-TROUBLE_EOF
-          sed -i "/TROUBLESHOOTING_PLACEHOLDER/r /tmp/troubleshooting.txt" $BUILD_DIR/build-summary.md
-          sed -i "/TROUBLESHOOTING_PLACEHOLDER/d" $BUILD_DIR/build-summary.md
+        echo "" >> $BUILD_DIR/build-summary.md
+        echo "## External Libraries Built" >> $BUILD_DIR/build-summary.md
+        echo "- libx264 (H.264 video encoding)" >> $BUILD_DIR/build-summary.md
+        echo "- libopus (Opus audio codec)" >> $BUILD_DIR/build-summary.md
+        echo "- libvpx (VP8/VP9 video codecs)" >> $BUILD_DIR/build-summary.md
+        echo "- libmp3lame (MP3 audio encoding)" >> $BUILD_DIR/build-summary.md
+        echo "" >> $BUILD_DIR/build-summary.md
+        echo "## AAR Information" >> $BUILD_DIR/build-summary.md
+        echo "- **File:** $AAR_NAME" >> $BUILD_DIR/build-summary.md
+        
+        if [ -f "$AAR_PATH" ]; then
+          AAR_SIZE=$(ls -lh "$AAR_PATH" | awk '{print $5}')
+          echo "- **Size:** $AAR_SIZE" >> $BUILD_DIR/build-summary.md
         else
-          sed -i "/TROUBLESHOOTING_PLACEHOLDER/d" $BUILD_DIR/build-summary.md
+          echo "- **Size:** N/A" >> $BUILD_DIR/build-summary.md
+        fi
+        
+        echo "- **Target ABI:** arm64-v8a only" >> $BUILD_DIR/build-summary.md
+        echo "" >> $BUILD_DIR/build-summary.md
+        echo "## Issues Found" >> $BUILD_DIR/build-summary.md
+        
+        if [ -n "$ISSUES_FOUND" ]; then
+          echo -e "$ISSUES_FOUND" >> $BUILD_DIR/build-summary.md
+        else
+          echo "No issues detected" >> $BUILD_DIR/build-summary.md
+        fi
+        
+        echo "" >> $BUILD_DIR/build-summary.md
+        echo "## Build Logs Location" >> $BUILD_DIR/build-summary.md
+        echo "- Configuration logs: $LOG_DIR/*-configure.log" >> $BUILD_DIR/build-summary.md
+        echo "- Build logs: $LOG_DIR/*-build.log" >> $BUILD_DIR/build-summary.md
+        echo "- Install logs: $LOG_DIR/*-install.log" >> $BUILD_DIR/build-summary.md
+        
+        if [ "$BUILD_SUCCESS" = false ]; then
+          echo "" >> $BUILD_DIR/build-summary.md
+          echo "## Troubleshooting" >> $BUILD_DIR/build-summary.md
+          echo "### Common Solutions:" >> $BUILD_DIR/build-summary.md
+          echo "1. Check NDK compatibility with external libraries" >> $BUILD_DIR/build-summary.md
+          echo "2. Verify license compatibility (GPL vs LGPL)" >> $BUILD_DIR/build-summary.md
+          echo "3. Check for missing dependencies or conflicts" >> $BUILD_DIR/build-summary.md
+          echo "4. Review configure flags for target architecture" >> $BUILD_DIR/build-summary.md
         fi
         
         echo "BUILD_SUCCESS=$BUILD_SUCCESS" >> $GITHUB_ENV
