@@ -54,9 +54,15 @@ jobs:
     - name: Setup Android SDK
       uses: android-actions/setup-android@v3
       with:
-        api-level: ${{ env.TARGET_SDK_VERSION }}
-        build-tools: '34.0.0'
-        ndk: ${{ env.ANDROID_NDK_VERSION }}
+        cmdline-tools-version: '11076708'
+        accept-android-sdk-licenses: true
+        log-accepted-android-sdk-licenses: true
+        packages: |
+          platform-tools
+          platforms;android-${{ env.TARGET_SDK_VERSION }}
+          build-tools;34.0.0
+          ndk;${{ env.ANDROID_NDK_VERSION }}
+          cmake;3.22.1
 
     - name: Cache external libraries
       uses: actions/cache@v4
@@ -89,6 +95,11 @@ jobs:
           python3-pip \
           meson
 
+    - name: Accept Android SDK licenses
+      run: |
+        yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses || true
+        $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --list_installed
+
     - name: Setup environment variables
       run: |
         echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
@@ -96,6 +107,12 @@ jobs:
         echo "TOOLCHAIN=$ANDROID_SDK_ROOT/ndk/${{ env.ANDROID_NDK_VERSION }}/toolchains/llvm/prebuilt/linux-x86_64" >> $GITHUB_ENV
         echo "PREFIX=$HOME/ffmpeg-android-build" >> $GITHUB_ENV
         echo "EXTERNAL_LIBS=$HOME/external-libs" >> $GITHUB_ENV
+        
+        # Verify NDK installation
+        if [ ! -d "$ANDROID_SDK_ROOT/ndk/${{ env.ANDROID_NDK_VERSION }}" ]; then
+          echo "NDK not found, installing..."
+          $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager "ndk;${{ env.ANDROID_NDK_VERSION }}"
+        fi
         
         # Architecture specific variables
         echo "TARGET_HOST=aarch64-linux-android" >> $GITHUB_ENV
@@ -115,10 +132,29 @@ jobs:
         #!/bin/bash
         set -e
         
+        # Verify toolchain exists
+        if [ ! -d "$TOOLCHAIN" ]; then
+          echo "Error: Toolchain not found at $TOOLCHAIN"
+          exit 1
+        fi
+        
+        # Setup cross-compilation environment
         export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH"
-        export CFLAGS="-O3 -fPIC -DANDROID -D__ANDROID_API__=$ANDROID_API_LEVEL"
+        export CFLAGS="-O3 -fPIC -DANDROID -D__ANDROID_API__=$ANDROID_API_LEVEL -I$TOOLCHAIN/sysroot/usr/include -I$TOOLCHAIN/sysroot/usr/include/aarch64-linux-android"
         export CXXFLAGS="$CFLAGS"
-        export LDFLAGS="-L$PREFIX/lib"
+        export LDFLAGS="-L$PREFIX/lib -L$TOOLCHAIN/sysroot/usr/lib/aarch64-linux-android/$ANDROID_API_LEVEL -L$TOOLCHAIN/sysroot/usr/lib/aarch64-linux-android"
+        export CROSS_PREFIX="$TOOLCHAIN/bin/aarch64-linux-android$ANDROID_API_LEVEL-"
+        export SYSROOT="$TOOLCHAIN/sysroot"
+        
+        # Verify compilers exist
+        if [ ! -f "$CC" ]; then
+          echo "Error: C compiler not found at $CC"
+          exit 1
+        fi
+        
+        echo "Using toolchain: $TOOLCHAIN"
+        echo "Using CC: $CC"
+        echo "Using CXX: $CXX"
         
         # Build x264 (H.264 encoder)
         build_x264() {
@@ -128,15 +164,18 @@ jobs:
             git clone --depth 1 https://code.videolan.org/videolan/x264.git
           fi
           cd x264
-          ./configure \
+          
+          # x264 configure script needs special handling
+          CC="$CC" CXX="$CXX" ./configure \
             --prefix=$PREFIX \
             --host=$TARGET_HOST \
-            --cross-prefix=$TOOLCHAIN/bin/aarch64-linux-android$ANDROID_API_LEVEL- \
-            --sysroot=$TOOLCHAIN/sysroot \
+            --sysroot=$SYSROOT \
             --enable-static \
             --enable-pic \
-            --disable-shared \
-            --disable-cli
+            --disable-cli \
+            --disable-opencl \
+            --disable-thread \
+            --cross-prefix="$CROSS_PREFIX"
           make -j$(nproc)
           make install
         }
@@ -149,15 +188,34 @@ jobs:
             git clone --depth 1 https://bitbucket.org/multicoreware/x265_git.git x265
           fi
           cd x265/build/linux
+          
+          # Create toolchain file for CMake
+          cat > android-arm64.cmake << 'EOL'
+        set(CMAKE_SYSTEM_NAME Android)
+        set(CMAKE_SYSTEM_VERSION 24)
+        set(CMAKE_ANDROID_ARCH_ABI arm64-v8a)
+        set(CMAKE_ANDROID_NDK $ENV{ANDROID_NDK_HOME})
+        set(CMAKE_ANDROID_STL_TYPE c++_shared)
+        
+        set(CMAKE_C_COMPILER $ENV{CC})
+        set(CMAKE_CXX_COMPILER $ENV{CXX})
+        set(CMAKE_AR $ENV{AR})
+        set(CMAKE_RANLIB $ENV{RANLIB})
+        set(CMAKE_STRIP $ENV{STRIP})
+        
+        set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+        set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+        set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+        EOL
+          
           cmake \
-            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=$TARGET_ARCH \
-            -DANDROID_PLATFORM=android-$ANDROID_API_LEVEL \
+            -DCMAKE_TOOLCHAIN_FILE=android-arm64.cmake \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=$PREFIX \
             -DENABLE_SHARED=OFF \
             -DENABLE_CLI=OFF \
-            -DCMAKE_ASM_NASM_FLAGS=-w-macro-params-legacy \
+            -DHIGH_BIT_DEPTH=ON \
+            -DENABLE_ASSEMBLY=OFF \
             ../../source
           make -j$(nproc)
           make install
@@ -171,17 +229,23 @@ jobs:
             git clone --depth 1 https://chromium.googlesource.com/webm/libvpx.git
           fi
           cd libvpx
+          
+          # Export compiler variables for libvpx
+          export AS="$CC"
+          CROSS="$TOOLCHAIN/bin/aarch64-linux-android$ANDROID_API_LEVEL-" \
+          CC="$CC" CXX="$CXX" AR="$AR" STRIP="$STRIP" NM="$NM" \
           ./configure \
             --prefix=$PREFIX \
             --target=arm64-android-gcc \
-            --sdk-path=$ANDROID_NDK_HOME \
             --disable-examples \
             --disable-unit-tests \
             --enable-vp8 \
             --enable-vp9 \
             --enable-vp9-highbitdepth \
             --enable-static \
-            --disable-shared
+            --disable-shared \
+            --disable-install-docs \
+            --disable-install-bins
           make -j$(nproc)
           make install
         }
@@ -195,13 +259,15 @@ jobs:
           fi
           cd opus
           ./autogen.sh
+          CC="$CC" CXX="$CXX" AR="$AR" RANLIB="$RANLIB" STRIP="$STRIP" \
           ./configure \
             --prefix=$PREFIX \
             --host=$TARGET_HOST \
             --enable-static \
             --disable-shared \
             --disable-doc \
-            --disable-extra-programs
+            --disable-extra-programs \
+            --disable-stack-protector
           make -j$(nproc)
           make install
         }
@@ -216,12 +282,14 @@ jobs:
             mv lame-3.100 lame
           fi
           cd lame
+          CC="$CC" CXX="$CXX" AR="$AR" RANLIB="$RANLIB" STRIP="$STRIP" \
           ./configure \
             --prefix=$PREFIX \
             --host=$TARGET_HOST \
             --enable-static \
             --disable-shared \
-            --disable-frontend
+            --disable-frontend \
+            --disable-decoder
           make -j$(nproc)
           make install
         }
@@ -235,6 +303,7 @@ jobs:
           fi
           cd fdk-aac
           ./autogen.sh
+          CC="$CC" CXX="$CXX" AR="$AR" RANLIB="$RANLIB" STRIP="$STRIP" \
           ./configure \
             --prefix=$PREFIX \
             --host=$TARGET_HOST \
@@ -253,6 +322,7 @@ jobs:
           fi
           cd libwebp
           ./autogen.sh
+          CC="$CC" CXX="$CXX" AR="$AR" RANLIB="$RANLIB" STRIP="$STRIP" \
           ./configure \
             --prefix=$PREFIX \
             --host=$TARGET_HOST \
@@ -262,12 +332,13 @@ jobs:
             --disable-png \
             --disable-jpeg \
             --disable-tiff \
-            --disable-gif
+            --disable-gif \
+            --disable-wic
           make -j$(nproc)
           make install
         }
         
-        # Build libass (subtitle renderer)
+        # Build libass (subtitle renderer) - simplified without complex dependencies
         build_ass() {
           echo "Building libass..."
           cd $EXTERNAL_LIBS
@@ -276,18 +347,21 @@ jobs:
           fi
           cd libass
           ./autogen.sh
+          CC="$CC" CXX="$CXX" AR="$AR" RANLIB="$RANLIB" STRIP="$STRIP" \
           ./configure \
             --prefix=$PREFIX \
             --host=$TARGET_HOST \
             --enable-static \
             --disable-shared \
             --disable-fontconfig \
-            --disable-require-system-font-provider
+            --disable-require-system-font-provider \
+            --disable-harfbuzz \
+            --disable-asm
           make -j$(nproc)
           make install
         }
         
-        # Build dav1d (AV1 decoder)
+        # Build dav1d (AV1 decoder) - using meson
         build_dav1d() {
           echo "Building dav1d..."
           cd $EXTERNAL_LIBS
@@ -296,7 +370,8 @@ jobs:
           fi
           cd dav1d
           
-          cat > android-cross.txt << EOL
+          # Create meson cross file
+          cat > android-arm64-cross.txt << 'EOL'
         [binaries]
         c = '$CC'
         cpp = '$CXX'
@@ -309,16 +384,29 @@ jobs:
         cpu_family = 'aarch64'
         cpu = 'aarch64'
         endian = 'little'
+        
+        [properties]
+        c_args = ['$CFLAGS']
+        c_link_args = ['$LDFLAGS']
         EOL
           
+          # Replace variables in cross file
+          sed -i "s|\$CC|$CC|g" android-arm64-cross.txt
+          sed -i "s|\$CXX|$CXX|g" android-arm64-cross.txt
+          sed -i "s|\$AR|$AR|g" android-arm64-cross.txt
+          sed -i "s|\$STRIP|$STRIP|g" android-arm64-cross.txt
+          sed -i "s|\$CFLAGS|$CFLAGS|g" android-arm64-cross.txt
+          sed -i "s|\$LDFLAGS|$LDFLAGS|g" android-arm64-cross.txt
+          
           meson setup build \
-            --cross-file android-cross.txt \
+            --cross-file android-arm64-cross.txt \
             --prefix=$PREFIX \
             --libdir=lib \
             --buildtype=release \
             --default-library=static \
             -Denable_tools=false \
-            -Denable_tests=false
+            -Denable_tests=false \
+            -Denable_asm=false
           meson compile -C build
           meson install -C build
         }
@@ -521,7 +609,17 @@ jobs:
         plugins {
             id 'com.android.library' version '8.1.4' apply false
         }
+        
+        allprojects {
+            repositories {
+                google()
+                mavenCentral()
+            }
+        }
         EOF
+        
+        # Create gradle wrapper directory
+        mkdir -p android-project/gradle/wrapper
         
         # Create gradle.properties
         cat > android-project/gradle.properties << 'EOF'
@@ -651,12 +749,54 @@ jobs:
     - name: Build Android AAR
       run: |
         cd android-project
-        chmod +x gradlew
-        ./gradlew clean assembleRelease
+        
+        # Create gradlew if it doesn't exist
+        if [ ! -f "gradlew" ]; then
+          echo "Creating Gradle wrapper..."
+          cat > gradle/wrapper/gradle-wrapper.properties << 'EOF'
+        distributionBase=GRADLE_USER_HOME
+        distributionPath=wrapper/dists
+        distributionUrl=https\://services.gradle.org/distributions/gradle-8.4-bin.zip
+        networkTimeout=10000
+        zipStoreBase=GRADLE_USER_HOME
+        zipStorePath=wrapper/dists
+        EOF
+          
+          mkdir -p gradle/wrapper
+          wget -q https://raw.githubusercontent.com/gradle/gradle/master/gradle/wrapper/gradle-wrapper.jar -O gradle/wrapper/gradle-wrapper.jar
+          
+          cat > gradlew << 'EOF'
+        #!/bin/sh
+        
+        DEFAULT_JVM_OPTS='"-Xmx64m" "-Xms64m"'
+        
+        APP_NAME="Gradle"
+        APP_BASE_NAME=`basename "$0"`
+        
+        GRADLE_USER_HOME=${GRADLE_USER_HOME:-$HOME/.gradle}
+        
+        exec java $DEFAULT_JVM_OPTS $JAVA_OPTS -jar "${0%/*}/gradle/wrapper/gradle-wrapper.jar" "$@"
+        EOF
+          chmod +x gradlew
+        fi
+        
+        # Set environment variables for Gradle
+        export ANDROID_HOME=$ANDROID_SDK_ROOT
+        export ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT
+        
+        # Accept licenses one more time to be sure
+        yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses || true
+        
+        # Build the AAR
+        ./gradlew clean assembleRelease --stacktrace --info
         
         # Copy AAR to artifacts location
         mkdir -p ../artifacts
-        cp app/build/outputs/aar/*.aar ../artifacts/
+        find . -name "*.aar" -exec cp {} ../artifacts/ \;
+        
+        # List what was built
+        echo "Built artifacts:"
+        ls -la ../artifacts/
         
         # Create build info
         cat > ../artifacts/build-info.txt << EOF
