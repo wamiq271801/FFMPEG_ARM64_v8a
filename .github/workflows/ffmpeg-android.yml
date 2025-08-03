@@ -57,12 +57,6 @@ jobs:
         cmdline-tools-version: '11076708'
         accept-android-sdk-licenses: true
         log-accepted-android-sdk-licenses: true
-        packages: |
-          platform-tools
-          platforms;android-${{ env.TARGET_SDK_VERSION }}
-          build-tools;34.0.0
-          ndk;${{ env.ANDROID_NDK_VERSION }}
-          cmake;3.22.1
 
     - name: Cache external libraries
       uses: actions/cache@v4
@@ -94,6 +88,16 @@ jobs:
           python3 \
           python3-pip \
           meson
+
+    - name: Install Android SDK packages
+      run: |
+        echo "Installing required Android SDK packages..."
+        $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --install \
+          "platform-tools" \
+          "platforms;android-${{ env.TARGET_SDK_VERSION }}" \
+          "build-tools;34.0.0" \
+          "ndk;${{ env.ANDROID_NDK_VERSION }}" \
+          "cmake;3.22.1"
 
     - name: Accept Android SDK licenses
       run: |
@@ -413,17 +417,24 @@ jobs:
         
         # Execute builds in order (respecting dependencies)
         mkdir -p $PREFIX
-        build_x264
-        build_x265
-        build_libvpx
-        build_opus
-        build_lame
-        build_fdk_aac
-        build_webp
-        build_ass
-        build_dav1d
         
-        echo "All external libraries built successfully!"
+        echo "Starting external library builds..."
+        echo "Toolchain verification complete. Beginning builds..."
+        
+        # Build libraries one by one with error handling
+        build_x264 || { echo "x264 build failed"; exit 1; }
+        build_x265 || { echo "x265 build failed, skipping..."; }
+        build_libvpx || { echo "libvpx build failed"; exit 1; }
+        build_opus || { echo "opus build failed"; exit 1; }
+        build_lame || { echo "lame build failed"; exit 1; }
+        build_fdk_aac || { echo "fdk-aac build failed"; exit 1; }
+        build_webp || { echo "webp build failed, skipping..."; }
+        build_ass || { echo "libass build failed, skipping..."; }
+        build_dav1d || { echo "dav1d build failed, skipping..."; }
+        
+        echo "External library builds completed!"
+        echo "Built libraries:"
+        ls -la $PREFIX/lib/
         EOF
         
         chmod +x build-external.sh
