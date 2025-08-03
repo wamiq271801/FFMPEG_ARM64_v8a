@@ -508,7 +508,7 @@ EOF
         fi
         
         # Create comprehensive summary
-        cat > $BUILD_DIR/build-summary.md << EOF
+        cat > $BUILD_DIR/build-summary.md << 'SUMMARY_EOF'
         # FFmpeg Android Build Summary
         
         **Build Date:** ${{ steps.setup-info.outputs.build-date }}
@@ -517,7 +517,7 @@ EOF
         **FFmpeg Version:** ${{ env.FFMPEG_VERSION }}
         **FFmpeg Commit:** ${{ env.FFMPEG_HASH }}
         **Build Type:** ${{ env.BUILD_TYPE }}
-        **Build Status:** $([ "$BUILD_SUCCESS" = true ] && echo "✅ SUCCESS" || echo "❌ FAILED")
+        **Build Status:** SUCCESS_STATUS_PLACEHOLDER
         
         ## External Libraries Built
         - libx264 (H.264 video encoding)
@@ -526,27 +526,49 @@ EOF
         - libmp3lame (MP3 audio encoding)
         
         ## AAR Information
-        - **File:** $AAR_NAME
-        - **Size:** $([ -f "$AAR_PATH" ] && ls -lh "$AAR_PATH" | awk '{print $5}' || echo "N/A")
+        - **File:** AAR_NAME_PLACEHOLDER
+        - **Size:** AAR_SIZE_PLACEHOLDER
         - **Target ABI:** arm64-v8a only
         
         ## Issues Found
-        $([ -n "$ISSUES_FOUND" ] && echo -e "$ISSUES_FOUND" || echo "No issues detected")
+        ISSUES_PLACEHOLDER
         
         ## Build Logs Location
-        - Configuration logs: $LOG_DIR/*-configure.log
-        - Build logs: $LOG_DIR/*-build.log
-        - Install logs: $LOG_DIR/*-install.log
+        - Configuration logs: LOG_DIR_PLACEHOLDER/*-configure.log
+        - Build logs: LOG_DIR_PLACEHOLDER/*-build.log
+        - Install logs: LOG_DIR_PLACEHOLDER/*-install.log
         
         ## Troubleshooting
-        $(if [ "$BUILD_SUCCESS" = false ]; then
-          echo "### Common Solutions:"
-          echo "1. Check NDK compatibility with external libraries"
-          echo "2. Verify license compatibility (GPL vs LGPL)"
-          echo "3. Check for missing dependencies or conflicts"
-          echo "4. Review configure flags for target architecture"
-        fi)
-        EOF
+        TROUBLESHOOTING_PLACEHOLDER
+SUMMARY_EOF
+
+        # Replace placeholders with actual values
+        sed -i "s/SUCCESS_STATUS_PLACEHOLDER/$([ "$BUILD_SUCCESS" = true ] && echo "✅ SUCCESS" || echo "❌ FAILED")/g" $BUILD_DIR/build-summary.md
+        sed -i "s/AAR_NAME_PLACEHOLDER/$AAR_NAME/g" $BUILD_DIR/build-summary.md
+        sed -i "s/AAR_SIZE_PLACEHOLDER/$([ -f "$AAR_PATH" ] && ls -lh "$AAR_PATH" | awk '{print $5}' || echo "N/A")/g" $BUILD_DIR/build-summary.md
+        sed -i "s|LOG_DIR_PLACEHOLDER|$LOG_DIR|g" $BUILD_DIR/build-summary.md
+        
+        if [ -n "$ISSUES_FOUND" ]; then
+          echo -e "$ISSUES_FOUND" | sed 's/^//' > /tmp/issues.txt
+          sed -i "/ISSUES_PLACEHOLDER/r /tmp/issues.txt" $BUILD_DIR/build-summary.md
+          sed -i "/ISSUES_PLACEHOLDER/d" $BUILD_DIR/build-summary.md
+        else
+          sed -i "s/ISSUES_PLACEHOLDER/No issues detected/g" $BUILD_DIR/build-summary.md
+        fi
+        
+        if [ "$BUILD_SUCCESS" = false ]; then
+          cat > /tmp/troubleshooting.txt << 'TROUBLE_EOF'
+### Common Solutions:
+1. Check NDK compatibility with external libraries
+2. Verify license compatibility (GPL vs LGPL)
+3. Check for missing dependencies or conflicts
+4. Review configure flags for target architecture
+TROUBLE_EOF
+          sed -i "/TROUBLESHOOTING_PLACEHOLDER/r /tmp/troubleshooting.txt" $BUILD_DIR/build-summary.md
+          sed -i "/TROUBLESHOOTING_PLACEHOLDER/d" $BUILD_DIR/build-summary.md
+        else
+          sed -i "/TROUBLESHOOTING_PLACEHOLDER/d" $BUILD_DIR/build-summary.md
+        fi
         
         echo "BUILD_SUCCESS=$BUILD_SUCCESS" >> $GITHUB_ENV
         cat $BUILD_DIR/build-summary.md
