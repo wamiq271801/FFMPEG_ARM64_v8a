@@ -197,6 +197,38 @@ jobs:
         
         echo "x264 build completed"
 
+    - name: Build libx265
+      id: build-x265
+      run: |
+        echo "=== Building libx265 ==="
+        cd $SRC_ROOT
+        
+        # Clone latest x265
+        git clone --depth 1 https://bitbucket.org/multicoreware/x265_git.git x265
+        cd x265/build/linux
+        
+        # Create Android toolchain file
+        cat > android.cmake << 'EOF'
+        set(CMAKE_SYSTEM_NAME Android)
+        set(CMAKE_SYSTEM_VERSION 21)
+        set(CMAKE_ANDROID_ARCH_ABI arm64-v8a)
+        set(CMAKE_ANDROID_NDK $ENV{ANDROID_NDK})
+        set(CMAKE_ANDROID_STL_TYPE c++_shared)
+        EOF
+        
+        cmake -DCMAKE_TOOLCHAIN_FILE=android.cmake \
+          -DCMAKE_INSTALL_PREFIX=$PREFIX_ROOT \
+          -DENABLE_SHARED=OFF \
+          -DENABLE_CLI=OFF \
+          -DCMAKE_BUILD_TYPE=Release \
+          ../../source \
+          2>&1 | tee $LOG_DIR/x265-configure.log
+          
+        make -j$(nproc) 2>&1 | tee $LOG_DIR/x265-build.log
+        make install 2>&1 | tee $LOG_DIR/x265-install.log
+        
+        echo "x265 build completed"
+
     - name: Build libopus
       id: build-opus
       run: |
@@ -255,6 +287,112 @@ jobs:
         
         echo "libvpx build completed"
 
+    - name: Build dav1d (AV1 Decoder)
+      id: build-dav1d
+      run: |
+        echo "=== Building dav1d ==="
+        cd $SRC_ROOT
+        
+        # Clone latest dav1d (fast AV1 decoder)
+        git clone --depth 1 https://code.videolan.org/videolan/dav1d.git
+        cd dav1d
+        
+        # Install meson for building
+        pip3 install meson ninja
+        
+        # Create cross file for Android
+        cat > android-cross.txt << EOF
+        [binaries]
+        c = '$CC'
+        cpp = '$CXX'
+        ar = '$AR'
+        strip = '$STRIP'
+        pkgconfig = 'pkg-config'
+        
+        [host_machine]
+        system = 'android'
+        cpu_family = 'aarch64'
+        cpu = 'aarch64'
+        endian = 'little'
+        
+        [properties]
+        c_args = ['$CFLAGS']
+        cpp_args = ['$CXXFLAGS']
+        c_link_args = ['$LDFLAGS']
+        cpp_link_args = ['$LDFLAGS']
+        EOF
+        
+        meson setup build \
+          --cross-file android-cross.txt \
+          --prefix=$PREFIX_ROOT \
+          --default-library=static \
+          --buildtype=release \
+          -Denable_tools=false \
+          -Denable_tests=false \
+          2>&1 | tee $LOG_DIR/dav1d-configure.log
+          
+        ninja -C build 2>&1 | tee $LOG_DIR/dav1d-build.log
+        ninja -C build install 2>&1 | tee $LOG_DIR/dav1d-install.log
+        
+        echo "dav1d build completed"
+
+    - name: Build libaom (AV1 Encoder/Decoder)
+      id: build-aom
+      run: |
+        echo "=== Building libaom ==="
+        cd $SRC_ROOT
+        
+        # Clone latest aom
+        git clone --depth 1 https://aomedia.googlesource.com/aom
+        cd aom
+        
+        mkdir build && cd build
+        
+        cmake -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=arm64-v8a \
+          -DANDROID_NATIVE_API_LEVEL=${{ env.ANDROID_API_LEVEL }} \
+          -DCMAKE_INSTALL_PREFIX=$PREFIX_ROOT \
+          -DBUILD_SHARED_LIBS=OFF \
+          -DENABLE_DOCS=OFF \
+          -DENABLE_EXAMPLES=OFF \
+          -DENABLE_TESTDATA=OFF \
+          -DENABLE_TESTS=OFF \
+          -DENABLE_TOOLS=OFF \
+          -DCONFIG_RUNTIME_CPU_DETECT=0 \
+          -DCMAKE_BUILD_TYPE=Release \
+          .. \
+          2>&1 | tee $LOG_DIR/aom-configure.log
+          
+        make -j$(nproc) 2>&1 | tee $LOG_DIR/aom-build.log
+        make install 2>&1 | tee $LOG_DIR/aom-install.log
+        
+        echo "aom build completed"
+
+    - name: Build libfdk-aac
+      id: build-fdk-aac
+      run: |
+        echo "=== Building libfdk-aac ==="
+        cd $SRC_ROOT
+        
+        # Clone latest fdk-aac
+        git clone --depth 1 https://github.com/mstorsjo/fdk-aac.git
+        cd fdk-aac
+        
+        ./autogen.sh
+        ./configure \
+          --prefix=$PREFIX_ROOT \
+          --host=$TARGET_HOST \
+          --disable-shared \
+          --enable-static \
+          CFLAGS="$CFLAGS" \
+          LDFLAGS="$LDFLAGS" \
+          2>&1 | tee $LOG_DIR/fdk-aac-configure.log
+          
+        make -j$(nproc) 2>&1 | tee $LOG_DIR/fdk-aac-build.log
+        make install 2>&1 | tee $LOG_DIR/fdk-aac-install.log
+        
+        echo "fdk-aac build completed"
+
     - name: Build libmp3lame
       id: build-lame
       run: |
@@ -281,6 +419,212 @@ jobs:
         make install 2>&1 | tee $LOG_DIR/lame-install.log
         
         echo "libmp3lame build completed"
+
+    - name: Build libvorbis
+      id: build-vorbis
+      run: |
+        echo "=== Building libvorbis ==="
+        cd $SRC_ROOT
+        
+        # First build libogg (dependency)
+        git clone --depth 1 https://github.com/xiph/ogg.git
+        cd ogg
+        ./autogen.sh
+        ./configure \
+          --prefix=$PREFIX_ROOT \
+          --host=$TARGET_HOST \
+          --disable-shared \
+          --enable-static \
+          CFLAGS="$CFLAGS" \
+          LDFLAGS="$LDFLAGS" \
+          2>&1 | tee $LOG_DIR/ogg-configure.log
+        make -j$(nproc) && make install
+        
+        # Now build libvorbis
+        cd $SRC_ROOT
+        git clone --depth 1 https://github.com/xiph/vorbis.git
+        cd vorbis
+        ./autogen.sh
+        ./configure \
+          --prefix=$PREFIX_ROOT \
+          --host=$TARGET_HOST \
+          --disable-shared \
+          --enable-static \
+          --disable-docs \
+          --disable-examples \
+          CFLAGS="$CFLAGS" \
+          LDFLAGS="$LDFLAGS" \
+          PKG_CONFIG_PATH="$PKG_CONFIG_PATH" \
+          2>&1 | tee $LOG_DIR/vorbis-configure.log
+          
+        make -j$(nproc) 2>&1 | tee $LOG_DIR/vorbis-build.log
+        make install 2>&1 | tee $LOG_DIR/vorbis-install.log
+        
+        echo "vorbis build completed"
+
+    - name: Build libpng
+      id: build-png
+      run: |
+        echo "=== Building libpng ==="
+        cd $SRC_ROOT
+        
+        # Clone latest libpng
+        git clone --depth 1 https://github.com/glennrp/libpng.git
+        cd libpng
+        
+        ./configure \
+          --prefix=$PREFIX_ROOT \
+          --host=$TARGET_HOST \
+          --disable-shared \
+          --enable-static \
+          CFLAGS="$CFLAGS" \
+          LDFLAGS="$LDFLAGS" \
+          2>&1 | tee $LOG_DIR/png-configure.log
+          
+        make -j$(nproc) 2>&1 | tee $LOG_DIR/png-build.log
+        make install 2>&1 | tee $LOG_DIR/png-install.log
+        
+        echo "libpng build completed"
+
+    - name: Build libjpeg-turbo
+      id: build-jpeg
+      run: |
+        echo "=== Building libjpeg-turbo ==="
+        cd $SRC_ROOT
+        
+        # Clone latest libjpeg-turbo
+        git clone --depth 1 https://github.com/libjpeg-turbo/libjpeg-turbo.git
+        cd libjpeg-turbo
+        
+        mkdir build && cd build
+        cmake -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=arm64-v8a \
+          -DANDROID_NATIVE_API_LEVEL=${{ env.ANDROID_API_LEVEL }} \
+          -DCMAKE_INSTALL_PREFIX=$PREFIX_ROOT \
+          -DBUILD_SHARED_LIBS=OFF \
+          -DENABLE_STATIC=ON \
+          -DWITH_TURBOJPEG=ON \
+          -DCMAKE_BUILD_TYPE=Release \
+          .. \
+          2>&1 | tee $LOG_DIR/jpeg-configure.log
+          
+        make -j$(nproc) 2>&1 | tee $LOG_DIR/jpeg-build.log
+        make install 2>&1 | tee $LOG_DIR/jpeg-install.log
+        
+        echo "libjpeg-turbo build completed"
+
+    - name: Build libwebp
+      id: build-webp
+      run: |
+        echo "=== Building libwebp ==="
+        cd $SRC_ROOT
+        
+        # Clone latest libwebp
+        git clone --depth 1 https://chromium.googlesource.com/webm/libwebp.git
+        cd libwebp
+        
+        ./autogen.sh
+        ./configure \
+          --prefix=$PREFIX_ROOT \
+          --host=$TARGET_HOST \
+          --disable-shared \
+          --enable-static \
+          --enable-libwebpmux \
+          --enable-libwebpdemux \
+          --enable-libwebpdecoder \
+          --disable-gl \
+          CFLAGS="$CFLAGS" \
+          LDFLAGS="$LDFLAGS" \
+          2>&1 | tee $LOG_DIR/webp-configure.log
+          
+        make -j$(nproc) 2>&1 | tee $LOG_DIR/webp-build.log
+        make install 2>&1 | tee $LOG_DIR/webp-install.log
+        
+        echo "webp build completed"
+
+    - name: Build libtiff
+      id: build-tiff
+      run: |
+        echo "=== Building libtiff ==="
+        cd $SRC_ROOT
+        
+        # Clone latest libtiff
+        git clone --depth 1 https://gitlab.com/libtiff/libtiff.git
+        cd libtiff
+        
+        ./autogen.sh
+        ./configure \
+          --prefix=$PREFIX_ROOT \
+          --host=$TARGET_HOST \
+          --disable-shared \
+          --enable-static \
+          --disable-tools \
+          --disable-tests \
+          --disable-docs \
+          CFLAGS="$CFLAGS" \
+          LDFLAGS="$LDFLAGS" \
+          2>&1 | tee $LOG_DIR/tiff-configure.log
+          
+        make -j$(nproc) 2>&1 | tee $LOG_DIR/tiff-build.log
+        make install 2>&1 | tee $LOG_DIR/tiff-install.log
+        
+        echo "libtiff build completed"
+
+    - name: Build libavif
+      id: build-avif
+      run: |
+        echo "=== Building libavif ==="
+        cd $SRC_ROOT
+        
+        # Clone latest libavif
+        git clone --depth 1 https://github.com/AOMediaCodec/libavif.git
+        cd libavif
+        
+        mkdir build && cd build
+        cmake -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=arm64-v8a \
+          -DANDROID_NATIVE_API_LEVEL=${{ env.ANDROID_API_LEVEL }} \
+          -DCMAKE_INSTALL_PREFIX=$PREFIX_ROOT \
+          -DBUILD_SHARED_LIBS=OFF \
+          -DAVIF_CODEC_AOM=ON \
+          -DAVIF_CODEC_DAV1D=ON \
+          -DAVIF_BUILD_APPS=OFF \
+          -DAVIF_BUILD_TESTS=OFF \
+          -DCMAKE_BUILD_TYPE=Release \
+          .. \
+          2>&1 | tee $LOG_DIR/avif-configure.log
+          
+        make -j$(nproc) 2>&1 | tee $LOG_DIR/avif-build.log
+        make install 2>&1 | tee $LOG_DIR/avif-install.log
+        
+        echo "libavif build completed"
+
+    - name: Build OpenSSL (for HTTPS support)
+      id: build-openssl
+      run: |
+        echo "=== Building OpenSSL ==="
+        cd $SRC_ROOT
+        
+        # Download latest stable OpenSSL
+        wget -q https://www.openssl.org/source/openssl-3.0.12.tar.gz
+        tar xzf openssl-3.0.12.tar.gz
+        cd openssl-3.0.12
+        
+        export ANDROID_NDK_ROOT=$ANDROID_NDK
+        export PATH=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
+        
+        ./Configure android-arm64 \
+          --prefix=$PREFIX_ROOT \
+          --openssldir=$PREFIX_ROOT/ssl \
+          no-shared \
+          no-tests \
+          -D__ANDROID_API__=${{ env.ANDROID_API_LEVEL }} \
+          2>&1 | tee $LOG_DIR/openssl-configure.log
+          
+        make -j$(nproc) 2>&1 | tee $LOG_DIR/openssl-build.log
+        make install_sw 2>&1 | tee $LOG_DIR/openssl-install.log
+        
+        echo "OpenSSL build completed"
 
     - name: Clone FFmpeg Official Repository
       id: clone-ffmpeg
@@ -325,23 +669,118 @@ jobs:
         
         # Enable external libraries (modern Android-relevant ones)
         CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-libx264"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-libx265"
         CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-libopus"
         CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-libvpx"
         CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-libmp3lame"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-libfdk-aac"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-libvorbis"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-libwebp"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-libaom"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-libdav1d"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-openssl"
         
         # Enable useful codecs and formats for Android
         CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-encoder=libx264"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-encoder=libx265"
         CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-encoder=libopus"
         CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-encoder=libvpx_vp8"
         CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-encoder=libvpx_vp9"
         CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-encoder=libmp3lame"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-encoder=libfdk_aac"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-encoder=libvorbis"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-encoder=libwebp"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-encoder=libaom_av1"
         CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-encoder=aac"
         CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-encoder=h264_mediacodec"
         CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-decoder=h264_mediacodec"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-decoder=libdav1d"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-decoder=libaom_av1"
         
-        # Enable protocols useful for Android
+        # Enable protocols useful for Android (HTTP/Streaming)
         CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-protocol=file"
         CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-protocol=http"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-protocol=https"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-protocol=hls"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-protocol=dash"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-protocol=rtmp"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-protocol=rtmps"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-protocol=tcp"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-protocol=udp"
+        
+        # Enable useful formats for streaming/mobile
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-demuxer=mov"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-demuxer=mp4"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-demuxer=matroska"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-demuxer=webm"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-demuxer=hls"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-demuxer=dash"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-muxer=mp4"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-muxer=matroska"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-muxer=webm"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-muxer=hls"
+        
+        # Disable unnecessary components to reduce size
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-programs"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-doc"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-debug"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-avdevice"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-postproc"
+        
+        # Disable old/unnecessary codecs and features (Android irrelevant)
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=snow"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-encoder=snow"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=dfa"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=dsicinvideo"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=cscd"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=cyuv"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=dxa"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=dxtory"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=escape124"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=flic"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=kmvc"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=mmvideo"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=motionpixels"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=nuv"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=rl2"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=smacker"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=smvjpeg"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=truemotion1"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=truemotion2"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=vb"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=vmdvideo"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=vmnc"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=wnv1"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=xan_dpcm"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=xan_wc3"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=xan_wc4"
+        
+        # Disable old audio codecs not useful for Android
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=adpcm_4xm"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=adpcm_adx"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=adpcm_ct"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=adpcm_ea"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=adpcm_ea_maxis_xa"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=adpcm_ea_r1"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=adpcm_ea_r2"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=adpcm_ea_r3"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=adpcm_ea_xas"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=adpcm_ima_amv"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=adpcm_ima_dk3"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=adpcm_ima_dk4"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=adpcm_ima_ea_eacs"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=adpcm_ima_ea_sead"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=adpcm_ima_iss"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=adpcm_ima_smjpeg"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=adpcm_ima_ws"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=adpcm_ms"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=adpcm_sbpro_2"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=adpcm_sbpro_3"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=adpcm_sbpro_4"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=adpcm_swf"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=adpcm_thp"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=adpcm_xa"
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-decoder=adpcm_yamaha"CONFIGURE_ARGS --enable-protocol=http"
         CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-protocol=https"
         CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-protocol=hls"
         CONFIGURE_ARGS="$CONFIGURE_ARGS --enable-protocol=dash"
@@ -526,10 +965,37 @@ jobs:
         
         echo "" >> $BUILD_DIR/build-summary.md
         echo "## External Libraries Built" >> $BUILD_DIR/build-summary.md
-        echo "- libx264 (H.264 video encoding)" >> $BUILD_DIR/build-summary.md
-        echo "- libopus (Opus audio codec)" >> $BUILD_DIR/build-summary.md
-        echo "- libvpx (VP8/VP9 video codecs)" >> $BUILD_DIR/build-summary.md
-        echo "- libmp3lame (MP3 audio encoding)" >> $BUILD_DIR/build-summary.md
+        echo "### Modern Video Codecs:" >> $BUILD_DIR/build-summary.md
+        echo "- libx264 (H.264 video encoding - industry standard)" >> $BUILD_DIR/build-summary.md
+        echo "- libx265 (H.265/HEVC video encoding - next-gen compression)" >> $BUILD_DIR/build-summary.md
+        echo "- libvpx (VP8/VP9 video codecs - web optimized)" >> $BUILD_DIR/build-summary.md
+        echo "- libaom (AV1 encoder - future-proof codec)" >> $BUILD_DIR/build-summary.md
+        echo "- libdav1d (AV1 decoder - fast and efficient)" >> $BUILD_DIR/build-summary.md
+        echo "- libwebp (WebP image format - modern web images)" >> $BUILD_DIR/build-summary.md
+        echo "" >> $BUILD_DIR/build-summary.md
+        echo "### Modern Audio Codecs:" >> $BUILD_DIR/build-summary.md
+        echo "- libopus (Opus audio codec - low latency, high quality)" >> $BUILD_DIR/build-summary.md
+        echo "- libfdk-aac (High-quality AAC encoder)" >> $BUILD_DIR/build-summary.md
+        echo "- libvorbis (Vorbis audio codec - open source)" >> $BUILD_DIR/build-summary.md
+        echo "- libmp3lame (MP3 encoding - compatibility)" >> $BUILD_DIR/build-summary.md
+        echo "" >> $BUILD_DIR/build-summary.md
+        echo "### Streaming & Network Support:" >> $BUILD_DIR/build-summary.md
+        echo "- OpenSSL (HTTPS, secure streaming)" >> $BUILD_DIR/build-summary.md
+        echo "- HTTP/HTTPS protocols enabled" >> $BUILD_DIR/build-summary.md
+        echo "- HLS (HTTP Live Streaming) support" >> $BUILD_DIR/build-summary.md
+        echo "- DASH (Dynamic Adaptive Streaming) support" >> $BUILD_DIR/build-summary.md
+        echo "- RTMP/RTMPS streaming protocols" >> $BUILD_DIR/build-summary.md
+        echo "" >> $BUILD_DIR/build-summary.md
+        echo "### Hardware Acceleration:" >> $BUILD_DIR/build-summary.md
+        echo "- Android MediaCodec integration" >> $BUILD_DIR/build-summary.md
+        echo "- Hardware H.264/H.265 decode acceleration" >> $BUILD_DIR/build-summary.md
+        echo "- Hardware VP8/VP9 decode acceleration" >> $BUILD_DIR/build-summary.md
+        echo "" >> $BUILD_DIR/build-summary.md
+        echo "### Excluded (Android Irrelevant):" >> $BUILD_DIR/build-summary.md
+        echo "- Legacy game codecs (4XM, Smacker, FLIC, etc.)" >> $BUILD_DIR/build-summary.md
+        echo "- Old ADPCM variants (EA, IMA variants, etc.)" >> $BUILD_DIR/build-summary.md
+        echo "- Obsolete container formats (NUT, NSV, etc.)" >> $BUILD_DIR/build-summary.md
+        echo "- Desktop-only features (X11, ALSA, etc.)" >> $BUILD_DIR/build-summary.md
         echo "" >> $BUILD_DIR/build-summary.md
         echo "## AAR Information" >> $BUILD_DIR/build-summary.md
         echo "- **File:** $AAR_NAME" >> $BUILD_DIR/build-summary.md
