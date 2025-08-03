@@ -169,7 +169,7 @@ jobs:
           fi
           cd x264
           
-          # x264 configure script needs special handling
+          # x264 configure script needs special handling for Android ARM64
           CC="$CC" CXX="$CXX" ./configure \
             --prefix=$PREFIX \
             --host=$TARGET_HOST \
@@ -179,6 +179,7 @@ jobs:
             --disable-cli \
             --disable-opencl \
             --disable-thread \
+            --disable-asm \
             --cross-prefix="$CROSS_PREFIX"
           make -j$(nproc)
           make install
